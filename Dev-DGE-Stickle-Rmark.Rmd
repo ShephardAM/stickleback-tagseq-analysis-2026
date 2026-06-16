@@ -1,0 +1,3968 @@
+---
+title: "Dev-DGE-Stickle-Rmark"
+author: "Anthony Snead"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Gene-Level
+
+## Import Data
+
+We import the date into a count matrix and sample information matrix. We filter the count matrix and convert to DGEList.
+```{r, Import Data}
+# read in count matrix
+Gene.Matrix <- read.csv(file = paste(getwd(), "/gene_count_matrix.csv", sep = "/"), 
+                        header = TRUE, row.names = 1) %>%
+  tibble::rownames_to_column(., var = "Gene") %>%
+  dplyr::mutate(Gene = gsub('gene-\\s*|\\|.*$', "", Gene)) %>%
+  tibble::column_to_rownames(., var = "Gene") 
+  
+
+Gene.Filtered <- Gene.Matrix %>%
+  # Filter out rows that add to 0.
+  dplyr::filter(rowSums(.) != 0) %>% 
+  # Filter out rows that had less than about 10 counts in less than 3 samples
+  dplyr::filter(rowSums(edgeR::cpm(.) >= 1) >= 3) %>%
+  # Order the columns by the column name
+  dplyr::select(order(colnames(.)))
+
+Sample.Info <- read.table(paste(getwd(), "Sample_Information.txt", sep = "/"),sep = "\t",
+                          header = TRUE, row.names = 1) %>%
+  dplyr::select(Clutch, Sex, Treatment, Timepoint) %>%
+  dplyr::mutate_all(as.character) %>%
+  tidyr::unite(col = "Group", Sex:Timepoint, sep = ".", remove = FALSE) %>%
+  dplyr::mutate_all(factor) 
+
+Sample.Info <- Sample.Info[colnames(Gene.Filtered), ]
+
+# Create a DGEList with normalized data
+DGE.Data <- edgeR::DGEList(counts = Gene.Filtered, group = as.factor(colnames(Gene.Filtered))) %>%
+  # Calculate the normalization factors per sample
+  edgeR::calcNormFactors(.)
+```
+
+## Testing Genes
+
+We first transform the count data into an assay blind to the experimental design before checking if any samples or genes have too many missing values with WGCNA. The allOK field is TRUE so we retain all samples and genes.
+
+```{r, WGCNA Testing Genes}
+# Setup DESeq data from count matrix.
+Transformed.Gene.Matrix <- DESeq2::DESeqDataSetFromMatrix(countData = Gene.Filtered, colData = Sample.Info, design = ~ Group) %>%
+  # Run Transformation blind to the experimental design.
+  DESeq2::varianceStabilizingTransformation(., blind = TRUE) %>%
+  # Extract the transformed data as a matrix.
+  SummarizedExperiment::assay(.)
+
+# Here we check for genes or samples with too many missing values. All samples and genes have passed.
+Gene.GSG <- WGCNA::goodSamplesGenes(t(Transformed.Gene.Matrix), verbose = 3)
+```
+
+## Cluster
+
+We cluster with hierarchical clustering to evaluate if there are any potential outlier samples or unexpected separation.
+```{r, cluster tree}
+# Here we evaluate the relationship between samples
+Gene.Sample.Tree <- hclust(dist(t(Transformed.Gene.Matrix)), method = "average")
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+
+# Here we plot the relationship tree.
+plot(Gene.Sample.Tree, main = "Sample clustering", sub="", xlab="", cex.lab = 1.5, cex.axis = 1.5, cex.main = 2)
+
+```
+
+## Distribution
+
+We log transform the count data and plot the density to evaluate the potential distribution of the data.
+```{r, Gene distribtuion}
+
+# get log counts  
+log.counts <- edgeR::cpm(DGE.Data, log = TRUE, prior.count = 2)
+
+# plot density
+Histogram <- ggplot2::ggplot(data = data.frame(rowMeans(log.counts)),
+                             ggplot2::aes(x = rowMeans.log.counts.)) +
+  ggplot2::geom_histogram(fill = "grey") +
+  ggplot2::theme_classic() +
+  ggplot2::labs(y = "Density", x = "Filtered Read Counts (logCPM)",
+                title = "Distribution of Normalized Filtered Read Counts")
+```
+
+## MDS Plots
+
+Here we have MDS plots for dimension 1-4 with the top 10K, 1K, and 500 genes to explore the potential clustering in our data.
+
+### MDS 10,000
+
+```{r, MDS 10000}
+# create mds plot in ggplot
+Gene.MDS.10000.1.2 <- as.data.frame(limma::plotMDS(DGE.Data, top = 10000, gene.selection = "pairwise", 
+                                                   dim.plot = c(1,2))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 1 & 2: Top 10,000 Genes",
+        x = "MDS Axis 1",
+        y = "MDS Axis 2") +
+  # change theme
+  ggplot2::theme_classic()
+
+# create mds plot in ggplot
+Gene.MDS.10000.2.3 <- as.data.frame(limma::plotMDS(DGE.Data, top = 10000, gene.selection = "pairwise",
+                                                   dim.plot = c(2,3))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 2 & 3: Top 10,000 Genes",
+        x = "MDS Axis 2",
+        y = "MDS Axis 3") +
+  # change theme
+  ggplot2::theme_classic()
+
+# create mds plot in ggplot
+Gene.MDS.10000.3.4 <- as.data.frame(limma::plotMDS(DGE.Data, top = 10000, gene.selection = "pairwise",
+                                                   dim.plot = c(3,4))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 3 & 4: Top 10,000 Genes",
+        x = "MDS Axis 3",
+        y = "MDS Axis 4") +
+  # change theme
+  ggplot2::theme_classic()
+```
+
+### MDS 1,000
+
+```{r, MDS 1000}
+# create mds plot in ggplot
+Gene.MDS.1000.1.2 <- as.data.frame(limma::plotMDS(DGE.Data, top = 1000, 
+                                                  gene.selection = "pairwise", dim.plot = c(1,2))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 1 & 2: Top 1,000 Genes",
+        x = "MDS Axis 1",
+        y = "MDS Axis 2") +
+  # change theme
+  ggplot2::theme_classic()
+
+# create mds plot in ggplot
+Gene.MDS.1000.2.3 <- as.data.frame(limma::plotMDS(DGE.Data, top = 1000, 
+                                                  gene.selection = "pairwise", dim.plot = c(2,3))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 2 & 3: Top 1,000 Genes",
+        x = "MDS Axis 2",
+        y = "MDS Axis 3") +
+  # change theme
+  ggplot2::theme_classic()
+
+# create mds plot in ggplot
+Gene.MDS.1000.3.4 <- as.data.frame(limma::plotMDS(DGE.Data, top = 1000, gene.selection = "pairwise", 
+                                                  dim.plot = c(3,4))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 3 & 4: Top 1,000 Genes",
+        x = "MDS Axis 3",
+        y = "MDS Axis 4") +
+  # change theme
+  ggplot2::theme_classic()
+```
+
+### MDS 500
+
+```{r, MDS 500}
+# create mds plot in ggplot
+Gene.MDS.500.1.2 <- as.data.frame(limma::plotMDS(DGE.Data, top = 500, gene.selection = "pairwise", 
+                                                 dim.plot = c(1,2))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 1 & 2: Top 500 Genes",
+        x = "MDS Axis 1",
+        y = "MDS Axis 2") +
+  # change theme
+  ggplot2::theme_classic()
+
+# create mds plot in ggplot
+Gene.MDS.500.2.3 <- as.data.frame(limma::plotMDS(DGE.Data, top = 500, gene.selection = "pairwise", 
+                                                 dim.plot = c(2,3))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 2 & 3: Top 500 Genes",
+        x = "MDS Axis 2",
+        y = "MDS Axis 3") +
+  # change theme
+  ggplot2::theme_classic()
+
+# create mds plot in ggplot
+Gene.MDS.500.3.4 <- as.data.frame(limma::plotMDS(DGE.Data, top = 500, gene.selection = "pairwise",
+                                                 dim.plot = c(3,4))) %>%
+  # convert the object to a data frame with sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # join to treatment information for plotting
+  dplyr::left_join(., tibble::rownames_to_column(Sample.Info, var = "Sample")) %>%
+  # plot
+  ggplot2::ggplot(., ggplot2::aes(x = x, y = y)) +
+  # add ellipse
+  ggforce::geom_mark_ellipse(aes(fill = Timepoint, label = Timepoint)) +
+  # add points
+  geom_point(ggplot2::aes(color = Sex, shape = Treatment)) +
+  # add labels
+  labs( title = "MDS Dimensions 3 & 4: Top 500 Genes",
+        x = "MDS Axis 3",
+        y = "MDS Axis 4") +
+  # change theme
+  ggplot2::theme_classic()
+```
+
+## Differential Gene Expression
+
+```{r, Dream metadata}
+# make dream meta data
+Dream.Meta <- Sample.Info %>%
+  # male characters
+  dplyr::mutate_all(as.character)
+```
+
+```{r, Dream parameters}
+# this is used implicitly by dream() to run in parallel
+Params <- BiocParallel::SnowParam(32, "SOCK", progressbar = TRUE, exportglobals = FALSE)
+
+# formula for dream
+Dream.Form <- ~0 + Group + (1|Clutch)
+```
+
+```{r,Dream contrasts}
+# make contrasts
+Dream.Constrast <- variancePartition::makeContrastsDream(Dream.Form, Dream.Meta, contrasts = c(
+  # difference between males by treatment at 48
+  "GroupM.Predator.48 - GroupM.Control.48",
+  # difference between females by treatment at 48
+  "GroupF.Predator.48 - GroupF.Control.48",
+  # difference between males by treatment at 98
+  "GroupM.Predator.98 - GroupM.Control.98",
+  # difference between females by treatment at 98
+  "GroupF.Predator.98 - GroupF.Control.98",
+  # difference between males by treatment at 144
+  "GroupM.Predator.144 - GroupM.Control.144",
+  # difference between females by treatment at 144
+  "GroupF.Predator.144 - GroupF.Control.144",
+  # difference between males by treatment at 240
+  "GroupM.Predator.240 - GroupM.Control.240",
+  # difference between females by treatment at 240
+  "GroupF.Predator.240 - GroupF.Control.240",
+  # main sex effect at time 48
+  "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main sex effect at time 98
+  "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main sex effect at time 140
+  "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main sex effect at time 240
+  "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/2",
+  # main predator effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48 + GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98 + GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144 + GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240 + GroupF.Predator.240 - GroupF.Control.240)/2",
+  # interaction effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48)",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98)",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144)",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240)",
+  # overall treatment affect in males
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupM.Control.48 - GroupM.Control.98 - GroupM.Control.144 - GroupM.Control.240)/4",
+  # overall treatment effect in females
+  "(GroupF.Predator.48 + GroupF.Predator.98 + GroupF.Predator.144 + GroupF.Predator.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/4",
+  # overall sex effect in predator treatment
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupF.Predator.48 - GroupF.Predator.98 - GroupF.Predator.144 - GroupF.Predator.240)/4",
+  # overall sex effect in control
+  "(GroupM.Control.48 + GroupM.Control.98 + GroupM.Control.144 + GroupM.Control.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/4",
+  # overall sex effect across all timepoints
+  "(GroupM.Control.48 + GroupM.Control.98 + GroupM.Control.144 + GroupM.Control.240 + GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240 - GroupF.Predator.48 - GroupF.Predator.98 - GroupF.Predator.144 - GroupF.Predator.240)/8",
+  # overall treatment effect across all timepoints
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 + GroupF.Predator.48 + GroupF.Predator.98 + GroupF.Predator.144 + GroupF.Predator.240 - GroupM.Control.48 - GroupM.Control.98 - GroupM.Control.144 - GroupM.Control.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/8",
+  # overall interaction effect
+  "((GroupM.Predator.48  - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48) + (GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98) + (GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144) + (GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240))/4"))
+
+
+```
+
+```{r, Grene Voom Dream}
+# estimate weights using linear mixed model of dream
+Gene.vobjDream <- variancePartition::voomWithDreamWeights(DGE.Data,
+                                                          Dream.Form, Dream.Meta, BPPARAM = Params)
+```
+
+```{r, Gene Dream fit}
+# Dream fit
+Gene.Dream.Fit <- variancePartition::dream(Gene.vobjDream, Dream.Form, Dream.Meta,
+                                           Dream.Constrast, BPPARAM = Params,
+                                           ddf = "Kenward-Roger")
+
+# ebayes
+Gene.Dream.Fit <- variancePartition::eBayes(Gene.Dream.Fit)
+```
+
+
+```{r, Gene Dream Results}
+# dream results
+DGE.Dream.Results <- lapply(X = list(
+  # difference between males by treatment at 48
+  "GroupM.Predator.48 - GroupM.Control.48",
+  # difference between females by treatment at 48
+  "GroupF.Predator.48 - GroupF.Control.48",
+  # difference between males by treatment at 98
+  "GroupM.Predator.98 - GroupM.Control.98",
+  # difference between females by treatment at 98
+  "GroupF.Predator.98 - GroupF.Control.98",
+  # difference between males by treatment at 144
+  "GroupM.Predator.144 - GroupM.Control.144",
+  # difference between females by treatment at 144
+  "GroupF.Predator.144 - GroupF.Control.144",
+  # difference between males by treatment at 240
+  "GroupM.Predator.240 - GroupM.Control.240",
+  # difference between females by treatment at 240
+  "GroupF.Predator.240 - GroupF.Control.240",
+  # main sex effect at time 48
+  "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main sex effect at time 98
+  "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main sex effect at time 140
+  "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main sex effect at time 240
+  "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/2",
+  # main predator effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48 + GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98 + GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144 + GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240 + GroupF.Predator.240 - GroupF.Control.240)/2",
+  # interaction effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48)",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98)",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144)",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240)",
+  # overall treatment affect in males
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupM.Control.48 - GroupM.Control.98 - GroupM.Control.144 - GroupM.Control.240)/4",
+  # overall treatment effect in females
+  "(GroupF.Predator.48 + GroupF.Predator.98 + GroupF.Predator.144 + GroupF.Predator.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/4",
+  # overall sex effect in predator treatment
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupF.Predator.48 - GroupF.Predator.98 - GroupF.Predator.144 - GroupF.Predator.240)/4",
+  # overall sex effect in control
+  "(GroupM.Control.48 + GroupM.Control.98 + GroupM.Control.144 + GroupM.Control.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/4",
+  # overall sex effect across all timepoints
+  "(GroupM.Control.48 + GroupM.Control.98 + GroupM.Control.144 + GroupM.Control.240 + GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240 - GroupF.Predator.48 - GroupF.Predator.98 - GroupF.Predator.144 - GroupF.Predator.240)/8",
+  # overall treatment effect across all timepoints
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 + GroupF.Predator.48 + GroupF.Predator.98 + GroupF.Predator.144 + GroupF.Predator.240 - GroupM.Control.48 - GroupM.Control.98 - GroupM.Control.144 - GroupM.Control.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/8",
+  # overall interaction effect
+  "((GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48) + (GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98) + (GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144) + (GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240))/4"),
+  FUN = function(X){
+    variancePartition::topTable(Gene.Dream.Fit, 
+                                coef = X, 
+                                adjust.method = "BH",
+                                p.value = 0.05, 
+                                number = Inf) %>%
+      # get gene ID
+      tibble::rownames_to_column(., var = "Gene_Id") %>%
+      dplyr::mutate(Contrast = X)}) %>%
+  # bind the list of results together
+  dplyr::bind_rows(.)
+```
+
+################### DID NOT RUN THIS ###################
+
+```{r, genome information}
+Genome_Info <- read.table(paste0(getwd(), "/Genome_Table.tsv"), header = TRUE, sep = "\t")
+
+
+```
+
+```{r, DGE Table with Info}
+# make table with all the extra information
+DGE.Dream.Results.Info.Table <- DGE.Dream.Results %>%
+  
+  
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description","chromosome_name", "go_id", "definition_1006"),
+                                     values =  .$Gene_Id, mart= Gene_Names), by = c("Gene_Id" = "ensembl_gene_id"), multiple  = "all")
+
+Test <- DGE.Dream.Results.Info.Table %>% filter(Contrast == "(GroupM.Predator.240 - GroupM.Control.240 + GroupF.Predator.240 - GroupF.Control.240)/4")
+```
+
+## WGCNA
+
+### WGCNA Set up
+
+```{r, WGCNA Set up}
+# no factors
+options(stringsAsFactors = FALSE)
+
+# enable multi-threading
+WGCNA::enableWGCNAThreads(nThreads = 80)
+```
+
+### Global
+
+```{r, WGCNA Data Formating}
+# Setup DESeq data from count matrix.
+WGCNA.Data.Matrix <- DESeq2::DESeqDataSetFromMatrix(countData = Gene.Filtered, colData = Sample.Info, design = ~ 1) %>%
+  # normalize
+  DESeq2::vst(.) %>%
+  # extract normalized ata
+  SummarizedExperiment::assay(.) %>%
+  # transpose
+  t(.)
+```
+
+#### Network Contruction
+
+##### Soft Threshold
+
+```{r, Global Pick Soft Threshold}
+# create vector of powers
+powers <- c(seq(2, 20, by = 1))
+
+# test powers
+Soft.Thresh.Df <- WGCNA::pickSoftThreshold(WGCNA.Data.Matrix, powerVector = powers, verbose = 5)
+
+# graph thresholds
+ggplot((data.frame(Soft.Thresh.Df$fitIndices) %>%
+          dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)), aes(x = Power, y = model_fit, label = Power)) +
+  # plot points
+  geom_point() +
+  # labels
+  geom_text(nudge_y = 0.1) +
+  #  WGCNA recommended as an R^2 cutoff
+  geom_hline(yintercept = 0.90, col = "red") +
+  # labels
+  xlab("Soft Threshold (power)") +
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  # format 
+  theme_classic()
+
+```
+
+##### Build Network
+
+```{r, Global Build Network}
+# run WGCNA
+WGCNA.bw.net <- WGCNA::blockwiseModules(WGCNA.Data.Matrix,
+                                        maxBlockSize = 100000,
+                                        TOMType = "signed",
+                                        power = 5,
+                                        numericLabels = TRUE,
+                                        randomSeed = 42)
+
+# write to results
+readr::write_rds(WGCNA.bw.net,
+                 file = paste(getwd(), "/Results/WGCNA/WGCNA_results.RDS", sep = ""))
+```
+
+
+#### Differential Module Expression
+
+```{r, Global WGCNA eigen}
+# data frame of eigengene module data
+Modules.Eig <- t(WGCNA.bw.net$MEs)-min(WGCNA.bw.net$MEs)
+
+# Module zero is where all genes that are not in a module go so we should remove it
+Modules.Eig <- Modules.Eig[!(row.names(Modules.Eig)) == "ME0",]
+```
+
+```{r, Global module genes}
+# genes within the modules
+Module.Genes <- tibble::enframe(WGCNA.bw.net$colors,
+                                       name = "Gene_Id", value = "Module")
+
+```
+
+
+```{r, Global modules eigen}
+Modules.Eig <- edgeR::DGEList(counts = Modules.Eig,
+                                  group = as.factor(colnames(Gene.Filtered)))
+```
+
+```{r, Global WGCNA Voom Dream}
+# estimate weights using linear mixed model of dream
+WGCNA.vobjDream <- variancePartition::voomWithDreamWeights(
+  Modules.Eig,
+  Dream.Form, Dream.Meta, BPPARAM = Params)
+```
+
+```{r,Global WGCNA Dream fit}
+# Dream fit
+WGCNA.Fit <- variancePartition::dream(WGCNA.vobjDream, Dream.Form, Dream.Meta,
+                                               Dream.Constrast, BPPARAM = Params,
+                                               ddf = "Kenward-Roger")
+
+# ebayes
+WGCNA.Fit <- variancePartition::eBayes(WGCNA.Fit)
+```
+
+```{r, WGCNA}
+WGCNA.DEM.Results <- lapply(X = list(
+  # difference between males by treatment at 48
+  "GroupM.Predator.48 - GroupM.Control.48",
+  # difference between females by treatment at 48
+  "GroupF.Predator.48 - GroupF.Control.48",
+  # difference between males by treatment at 98
+  "GroupM.Predator.98 - GroupM.Control.98",
+  # difference between females by treatment at 98
+  "GroupF.Predator.98 - GroupF.Control.98",
+  # difference between males by treatment at 144
+  "GroupM.Predator.144 - GroupM.Control.144",
+  # difference between females by treatment at 144
+  "GroupF.Predator.144 - GroupF.Control.144",
+  # difference between males by treatment at 240
+  "GroupM.Predator.240 - GroupM.Control.240",
+  # difference between females by treatment at 240
+  "GroupF.Predator.240 - GroupF.Control.240",
+  # main sex effect at time 48
+  "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main sex effect at time 98
+  "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main sex effect at time 140
+  "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main sex effect at time 240
+  "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/2",
+  # main predator effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48 + GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98 + GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144 + GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240 + GroupF.Predator.240 - GroupF.Control.240)/2",
+  # interaction effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48)",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98)",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144)",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240)",
+  # overall treatment affect in males
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupM.Control.48 - GroupM.Control.98 - GroupM.Control.144 - GroupM.Control.240)/4",
+  # overall treatment effect in females
+  "(GroupF.Predator.48 + GroupF.Predator.98 + GroupF.Predator.144 + GroupF.Predator.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/4",
+  # overall sex effect in predator treatment
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupF.Predator.48 - GroupF.Predator.98 - GroupF.Predator.144 - GroupF.Predator.240)/4",
+  # overall sex effect in control
+  "(GroupM.Control.48 + GroupM.Control.98 + GroupM.Control.144 + GroupM.Control.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/4",
+  # overall sex effect across all timepoints
+  "(GroupM.Control.48 + GroupM.Control.98 + GroupM.Control.144 + GroupM.Control.240 + GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240 - GroupF.Predator.48 - GroupF.Predator.98 - GroupF.Predator.144 - GroupF.Predator.240)/8",
+  # overall treatment effect across all timepoints
+  "(GroupM.Predator.48 + GroupM.Predator.98 + GroupM.Predator.144 + GroupM.Predator.240 + GroupF.Predator.48 + GroupF.Predator.98 + GroupF.Predator.144 + GroupF.Predator.240 - GroupM.Control.48 - GroupM.Control.98 - GroupM.Control.144 - GroupM.Control.240 - GroupF.Control.48 - GroupF.Control.98 - GroupF.Control.144 - GroupF.Control.240)/8",
+  # overall interaction effect
+  "((GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48) + (GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98) + (GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144) + (GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240))/4"),
+  FUN = function(X){
+    variancePartition::topTable(WGCNA.Fit, 
+                                                         coef = X, 
+                                                         adjust.method = "BH",
+                                                         p.value = 0.05, 
+                                                         number = Inf) %>%
+      # get gene ID
+      tibble::rownames_to_column(., var = "Module") %>%
+      dplyr::mutate(Contrast = X)}) %>%
+  # bind the list of results together
+  dplyr::bind_rows(.)
+
+```
+
+
+#### DID NOT DO THIS CHUNK YET
+```{r, DME Table with Gene Info}
+# make table with all the extra information
+DME.Global.Results.Info.Table <- Module.Genes %>%
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description", "go_id", "definition_1006"),
+                                     values =  .$Gene_Id, mart= Gene_Names), by = c("Gene_Id" = "ensembl_gene_id"), multiple  = "all")
+```
+
+### Time 48
+
+```{r, 48 WGCNA Data Formating}
+# Setup DESeq data from count matrix.
+WGCNA.Data.Matrix.48 <- DESeq2::DESeqDataSetFromMatrix(countData = (Gene.Filtered %>%
+                                                                      dplyr::select(contains("48"))),
+                                                       colData = (Sample.Info %>%
+                                                                    dplyr::filter(Timepoint == 48)),
+                                                       design = ~ 1) %>%
+  # normalize
+  DESeq2::vst(.) %>%
+  # extract normalized ata
+  SummarizedExperiment::assay(.) %>%
+  # transpose
+  t(.)
+```
+
+#### Network Contruction
+
+##### Soft Threshold
+
+```{r, 48 Pick Soft Threshold}
+# create vector of powers
+powers <- c(seq(2, 20, by = 1))
+
+# test powers
+Soft.Thresh.Df.48 <- WGCNA::pickSoftThreshold(WGCNA.Data.Matrix.48, powerVector = powers, verbose = 5)
+
+# graph thresholds
+ggplot((data.frame(Soft.Thresh.Df.48$fitIndices) %>%
+          dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)), aes(x = Power, y = model_fit, label = Power)) +
+  # plot points
+  geom_point() +
+  # labels
+  geom_text(nudge_y = 0.1) +
+  #  WGCNA recommended as an R^2 cutoff
+  geom_hline(yintercept = 0.90, col = "red") +
+  # labels
+  xlab("Soft Threshold (power)") +
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  # format 
+  theme_classic()
+
+```
+
+##### Build Network
+
+```{r,48 Build Network}
+# run WGCNA
+WGCNA.bw.net.48 <- WGCNA::blockwiseModules(WGCNA.Data.Matrix.48,
+                                        maxBlockSize = 100000,
+                                        TOMType = "signed",
+                                        power = 3,
+                                        numericLabels = TRUE,
+                                        randomSeed = 42)
+
+# write to results
+readr::write_rds(WGCNA.bw.net.48,
+                 file = paste(getwd(), "/Results/WGCNA/WGCNA_results_48.RDS", sep = ""))
+```
+
+#### Differential Module Expression
+
+
+```{r,48 metadata}
+# make dream meta data
+Dream.Meta.48 <- Sample.Info %>%
+  dplyr::filter(Timepoint == 48) %>%
+  # male characters
+  dplyr::mutate_all(as.character)
+```
+
+```{r,48 contrast}
+# make contrasts
+Dream.Constrast.48 <- variancePartition::makeContrastsDream(Dream.Form, Dream.Meta.48,
+                                                                 contrasts = c(
+                                                                   # difference between males by treatment at 48
+  "GroupM.Predator.48 - GroupM.Control.48",
+  # difference between females by treatment at 48
+  "GroupF.Predator.48 - GroupF.Control.48",
+  # difference between male and female in control at 48
+  "GroupM.Control.48 - GroupF.Control.48",
+  # difference between male and female in predator at 48
+  "GroupM.Predator.48 - GroupF.Predator.48",
+  # main sex effect at time 48
+  "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main predator effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48 + GroupF.Predator.48 - GroupF.Control.48)/2",
+  # interaction effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48)"))
+
+
+```
+
+```{r,48 WGCNA eigen}
+# data frame of eigengene module data
+Modules.Eig.48 <- t(WGCNA.bw.net.48$MEs)-min(WGCNA.bw.net.48$MEs)
+
+# Module zero is where all genes that are not in a module go so we should remove it
+Modules.Eig.48 <- Modules.Eig.48[!(row.names(Modules.Eig.48)) == "ME0",]
+```
+
+```{r,48 module genes}
+# genes within the modules
+Module.Genes.48 <- tibble::enframe(WGCNA.bw.net.48$colors,
+                                       name = "Gene_Id", value = "Module")
+
+```
+
+
+```{r,48 modules eigen}
+Modules.Eig.48 <- edgeR::DGEList(counts = Modules.Eig.48,
+                                  group = as.factor(colnames((Gene.Filtered %>%
+                                                                dplyr::select(contains("48"))))))
+```
+
+```{r,48 voom dream}
+# estimate weights using linear mixed model of dream
+WGCNA.vobjDream.48 <- variancePartition::voomWithDreamWeights(
+  Modules.Eig.48,
+  Dream.Form, Dream.Meta.48, BPPARAM = Params)
+```
+
+```{r, dream fit}
+# Dream fit
+WGCNA.Fit.48 <- variancePartition::dream(WGCNA.vobjDream.48, Dream.Form, Dream.Meta.48,
+                                               Dream.Constrast.48, BPPARAM = Params,
+                                               ddf = "Kenward-Roger")
+
+# ebayes
+WGCNA.Fit.48 <- variancePartition::eBayes(WGCNA.Fit.48)
+```
+
+```{r, WGCNA}
+WGCNA.DEM.Results.48 <- lapply(X = list(
+  # difference between males by treatment at 48
+  "GroupM.Predator.48 - GroupM.Control.48",
+  # difference between females by treatment at 48
+  "GroupF.Predator.48 - GroupF.Control.48",
+  # difference between male and female in control at 48
+  "GroupM.Control.48 - GroupF.Control.48",
+  # difference between male and female in predator at 48
+  "GroupM.Predator.48 - GroupF.Predator.48",
+  # main sex effect at time 48
+  "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/2",
+  # main predator effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48 + GroupF.Predator.48 - GroupF.Control.48)/2",
+  # interaction effect at time 48
+  "(GroupM.Predator.48 - GroupM.Control.48) - (GroupF.Predator.48 - GroupF.Control.48)"),
+  FUN = function(X){
+    variancePartition::topTable(WGCNA.Fit.48, 
+                                                         coef = X, 
+                                                         adjust.method = "BH",
+                                                         p.value = 0.05, 
+                                                         number = Inf) %>%
+      # get gene ID
+      tibble::rownames_to_column(., var = "Module") %>%
+      dplyr::mutate(Contrast = X)}) %>%
+  # bind the list of results together
+  dplyr::bind_rows(.)
+
+```
+
+############### Did not do this############
+```{r, DME Table with Gene Info}
+# make table with all the extra information
+DME.48.Results.Info.Table <- Module.Genes.48 %>%
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description", "go_id", "definition_1006"),
+                                     values =  .$Gene_Id, mart= Gene_Names), by = c("Gene_Id" = "ensembl_gene_id"), multiple  = "all")
+```
+
+### Time 98
+
+```{r,98 WGCNA Data Formating}
+# Setup DESeq data from count matrix.
+WGCNA.Data.Matrix.98 <- DESeq2::DESeqDataSetFromMatrix(countData = (Gene.Filtered %>%
+                                                                      dplyr::select(contains("98"))),
+                                                       colData = (Sample.Info %>%
+                                                                    dplyr::filter(Timepoint == 98)),
+                                                       design = ~ 1) %>%
+  # normalize
+  DESeq2::vst(.) %>%
+  # extract normalized ata
+  SummarizedExperiment::assay(.) %>%
+  # transpose
+  t(.)
+```
+
+#### Network Contruction
+
+##### Soft Threshold
+
+```{r,98 Pick Soft Threshold}
+# create vector of powers
+powers <- c(seq(2, 20, by = 1))
+
+# test powers
+Soft.Thresh.Df.98 <- WGCNA::pickSoftThreshold(WGCNA.Data.Matrix.98, powerVector = powers, verbose = 5)
+
+# graph thresholds
+ggplot((data.frame(Soft.Thresh.Df.98$fitIndices) %>%
+          dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)), aes(x = Power, y = model_fit, label = Power)) +
+  # plot points
+  geom_point() +
+  # labels
+  geom_text(nudge_y = 0.1) +
+  #  WGCNA recommended as an R^2 cutoff
+  geom_hline(yintercept = 0.90, col = "red") +
+  # labels
+  xlab("Soft Threshold (power)") +
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  # format 
+  theme_classic()
+
+```
+
+##### Build Network
+
+```{r,98 Build Network}
+# run WGCNA
+WGCNA.bw.net.98 <- WGCNA::blockwiseModules(WGCNA.Data.Matrix.98,
+                                        maxBlockSize = 100000,
+                                        TOMType = "signed",
+                                        power = 11,
+                                        numericLabels = TRUE,
+                                        randomSeed = 42)
+
+# write to results
+readr::write_rds(WGCNA.bw.net.98,
+                 file = paste(getwd(), "/Results/WGCNA/WGCNA_results_98.RDS", sep = ""))
+```
+
+
+#### Differential Module Expression
+
+```{r,98 metadata}
+# make dream meta data
+Dream.Meta.98 <- Sample.Info %>%
+  dplyr::filter(Timepoint == 98) %>%
+  # male characters
+  dplyr::mutate_all(as.character)
+```
+
+```{r,98 contrast}
+# make contrasts
+Dream.Constrast.98 <- variancePartition::makeContrastsDream(Dream.Form, Dream.Meta.98,
+                                                                 contrasts = c(
+                                                                   # difference between males by treatment at 98
+  "GroupM.Predator.98 - GroupM.Control.98",
+  # difference between females by treatment at 98
+  "GroupF.Predator.98 - GroupF.Control.98",
+  # difference between male and female in control at 98
+  "GroupM.Control.98 - GroupF.Control.98",
+  # difference between male and female in predator at 98
+  "GroupM.Predator.98 - GroupF.Predator.98",
+  # main sex effect at time 98
+  "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98 + GroupF.Predator.98 - GroupF.Control.98)/2",
+  # interaction effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98)"))
+
+
+```
+
+```{r,98 WGCNA eigen}
+# data frame of eigengene module data
+Modules.Eig.98 <- t(WGCNA.bw.net.98$MEs)-min(WGCNA.bw.net.98$MEs)
+
+# Module zero is where all genes that are not in a module go so we should remove it
+Modules.Eig.98 <- Modules.Eig.98[!(row.names(Modules.Eig.98)) == "ME0",]
+```
+
+```{r,98 module genes}
+# genes within the modules
+Module.Genes.98 <- tibble::enframe(WGCNA.bw.net.98$colors,
+                                       name = "Gene_Id", value = "Module")
+
+```
+
+
+```{r,98 modules eigen}
+Modules.Eig.98 <- edgeR::DGEList(counts = Modules.Eig.98,
+                                  group = as.factor(colnames((Gene.Filtered %>%
+                                                                dplyr::select(contains("98"))))))
+```
+
+```{r,98 voom dream}
+# estimate weights using linear mixed model of dream
+WGCNA.vobjDream.98 <- variancePartition::voomWithDreamWeights(
+  Modules.Eig.98,
+  Dream.Form, Dream.Meta.98, BPPARAM = Params)
+```
+
+```{r,98 dream fit}
+# Dream fit
+WGCNA.Fit.98 <- variancePartition::dream(WGCNA.vobjDream.98, Dream.Form, Dream.Meta.98,
+                                               Dream.Constrast.98, BPPARAM = Params,
+                                               ddf = "Kenward-Roger")
+
+# ebayes
+WGCNA.Fit.98 <- variancePartition::eBayes(WGCNA.Fit.98)
+```
+
+```{r, WGCNA}
+WGCNA.DEM.Results.98 <- lapply(X = list(
+  # difference between males by treatment at 98
+  "GroupM.Predator.98 - GroupM.Control.98",
+  # difference between females by treatment at 98
+  "GroupF.Predator.98 - GroupF.Control.98",
+  # difference between male and female in control at 98
+  "GroupM.Control.98 - GroupF.Control.98",
+  # difference between male and female in predator at 98
+  "GroupM.Predator.98 - GroupF.Predator.98",
+  # main sex effect at time 98
+  "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.98)/2",
+  # main predator effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98 + GroupF.Predator.98 - GroupF.Control.98)/2",
+  # interaction effect at time 98
+  "(GroupM.Predator.98 - GroupM.Control.98) - (GroupF.Predator.98 - GroupF.Control.98)"),
+  FUN = function(X){
+    variancePartition::topTable(WGCNA.Fit.98, 
+                                                         coef = X, 
+                                                         adjust.method = "BH",
+                                                         p.value = 0.05, 
+                                                         number = Inf) %>%
+      # get gene ID
+      tibble::rownames_to_column(., var = "Module") %>%
+      dplyr::mutate(Contrast = X)}) %>%
+  # bind the list of results together
+  dplyr::bind_rows(.)
+
+```
+
+#### DIDNT DO THIS ###
+```{r, DME Table with Gene Info}
+# make table with all the extra information
+DME.98.Results.Info.Table <- Module.Genes.98 %>%
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description", "go_id", "definition_1006"),
+                                     values =  .$Gene_Id, mart= Gene_Names), by = c("Gene_Id" = "ensembl_gene_id"), multiple  = "all")
+```
+
+### Time 144
+
+```{r,144 WGCNA Data Formating}
+# Setup DESeq data from count matrix.
+WGCNA.Data.Matrix.144 <- DESeq2::DESeqDataSetFromMatrix(countData = (Gene.Filtered %>%
+                                                                      dplyr::select(contains("144"))),
+                                                       colData = (Sample.Info %>%
+                                                                    dplyr::filter(Timepoint == 144)),
+                                                       design = ~ 1) %>%
+  # normalize
+  DESeq2::vst(.) %>%
+  # extract normalized ata
+  SummarizedExperiment::assay(.) %>%
+  # transpose
+  t(.)
+```
+
+#### Network Contruction
+
+##### Soft Threshold
+
+```{r,144 Pick Soft Threshold}
+# create vector of powers
+powers <- c(seq(2, 20, by = 1))
+
+# test powers
+Soft.Thresh.Df.144 <- WGCNA::pickSoftThreshold(WGCNA.Data.Matrix.144, powerVector = powers, verbose = 5)
+
+# graph thresholds
+ggplot((data.frame(Soft.Thresh.Df.144$fitIndices) %>%
+          dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)), aes(x = Power, y = model_fit, label = Power)) +
+  # plot points
+  geom_point() +
+  # labels
+  geom_text(nudge_y = 0.1) +
+  #  WGCNA recommended as an R^2 cutoff
+  geom_hline(yintercept = 0.90, col = "red") +
+  # labels
+  xlab("Soft Threshold (power)") +
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  # format 
+  theme_classic()
+
+```
+
+##### Build Network
+
+```{r,144 Build Network}
+# run WGCNA
+WGCNA.bw.net.144 <- WGCNA::blockwiseModules(WGCNA.Data.Matrix.144,
+                                        maxBlockSize = 100000,
+                                        TOMType = "signed",
+                                        power = 5,
+                                        numericLabels = TRUE,
+                                        randomSeed = 42)
+
+# write to results
+readr::write_rds(WGCNA.bw.net.144,
+                 file = paste(getwd(), "/Results/WGCNA/WGCNA_results_144.RDS", sep = ""))
+```
+
+
+#### Differential Module Expression
+
+```{r,144 metadata}
+# make dream meta data
+Dream.Meta.144 <- Sample.Info %>%
+  dplyr::filter(Timepoint == 144) %>%
+  # male characters
+  dplyr::mutate_all(as.character)
+```
+
+```{r,144 contrast}
+# make contrasts
+Dream.Constrast.144 <- variancePartition::makeContrastsDream(Dream.Form, Dream.Meta.144,
+                                                                 contrasts = c(
+                                                                   # difference between males by treatment at 144
+  "GroupM.Predator.144 - GroupM.Control.144",
+  # difference between females by treatment at 144
+  "GroupF.Predator.144 - GroupF.Control.144",
+  # difference between male and female in control at 144
+  "GroupM.Control.144 - GroupF.Control.144",
+  # difference between male and female in predator at 144
+  "GroupM.Predator.144 - GroupF.Predator.144",
+  # main sex effect at time 144
+  "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144 + GroupF.Predator.144 - GroupF.Control.144)/2",
+  # interaction effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144)"))
+
+
+```
+
+```{r,144 WGCNA eigen}
+# data frame of eigengene module data
+Modules.Eig.144 <- t(WGCNA.bw.net.144$MEs)-min(WGCNA.bw.net.144$MEs)
+
+# Module zero is where all genes that are not in a module go so we should remove it
+Modules.Eig.144 <- Modules.Eig.144[!(row.names(Modules.Eig.144)) == "ME0",]
+```
+
+```{r,144 module genes}
+# genes within the modules
+Module.Genes.144 <- tibble::enframe(WGCNA.bw.net.144$colors,
+                                       name = "Gene_Id", value = "Module")
+
+```
+
+
+```{r,144 modules eigen}
+Modules.Eig.144 <- edgeR::DGEList(counts = Modules.Eig.144,
+                                  group = as.factor(colnames((Gene.Filtered %>%
+                                                                dplyr::select(contains("144"))))))
+```
+
+```{r, voom dream}
+# estimate weights using linear mixed model of dream
+WGCNA.vobjDream.144 <- variancePartition::voomWithDreamWeights(
+  Modules.Eig.144,
+  Dream.Form, Dream.Meta.144, BPPARAM = Params)
+```
+
+```{r,144 dream fit}
+# Dream fit
+WGCNA.Fit.144 <- variancePartition::dream(WGCNA.vobjDream.144, Dream.Form, Dream.Meta.144,
+                                               Dream.Constrast.144, BPPARAM = Params,
+                                               ddf = "Kenward-Roger")
+
+# ebayes
+WGCNA.Fit.144 <- variancePartition::eBayes(WGCNA.Fit.144)
+```
+
+```{r,144 WGCNA}
+WGCNA.DEM.Results.144 <- lapply(X = list(
+  # difference between males by treatment at 144
+  "GroupM.Predator.144 - GroupM.Control.144",
+  # difference between females by treatment at 144
+  "GroupF.Predator.144 - GroupF.Control.144",
+  # difference between male and female in control at 144
+  "GroupM.Control.144 - GroupF.Control.144",
+  # difference between male and female in predator at 144
+  "GroupM.Predator.144 - GroupF.Predator.144",
+  # main sex effect at time 144
+  "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/2",
+  # main predator effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144 + GroupF.Predator.144 - GroupF.Control.144)/2",
+  # interaction effect at time 144
+  "(GroupM.Predator.144 - GroupM.Control.144) - (GroupF.Predator.144 - GroupF.Control.144)"),
+  FUN = function(X){
+    variancePartition::topTable(WGCNA.Fit.144, 
+                                                         coef = X, 
+                                                         adjust.method = "BH",
+                                                         p.value = 0.05, 
+                                                         number = Inf) %>%
+      # get gene ID
+      tibble::rownames_to_column(., var = "Module") %>%
+      dplyr::mutate(Contrast = X)}) %>%
+  # bind the list of results together
+  dplyr::bind_rows(.)
+
+```
+
+#### DID not do this
+```{r,144 DME Table with Gene Info}
+# make table with all the extra information
+DME.144.Results.Info.Table <- Module.Genes.144 %>%
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description", "go_id", "definition_1006"),
+                                     values =  .$Gene_Id, mart= Gene_Names), by = c("Gene_Id" = "ensembl_gene_id"), multiple  = "all")
+```
+
+### Time 240
+
+```{r,240 WGCNA Data Formating}
+# Setup DESeq data from count matrix.
+WGCNA.Data.Matrix.240 <- DESeq2::DESeqDataSetFromMatrix(countData = (Gene.Filtered %>%
+                                                                      dplyr::select(contains("240"))),
+                                                       colData = (Sample.Info %>%
+                                                                    dplyr::filter(Timepoint == 240)),
+                                                       design = ~ 1) %>%
+  # normalize
+  DESeq2::vst(.) %>%
+  # extract normalized ata
+  SummarizedExperiment::assay(.) %>%
+  # transpose
+  t(.)
+```
+
+#### Network Contruction
+
+##### Soft Threshold
+
+```{r,240 Pick Soft Threshold}
+# create vector of powers
+powers <- c(seq(2, 20, by = 1))
+
+# test powers
+Soft.Thresh.Df.240 <- WGCNA::pickSoftThreshold(WGCNA.Data.Matrix.240, powerVector = powers, verbose = 5)
+
+# graph thresholds
+ggplot((data.frame(Soft.Thresh.Df.240$fitIndices) %>%
+          dplyr::mutate(model_fit = -sign(slope) * SFT.R.sq)), aes(x = Power, y = model_fit, label = Power)) +
+  # plot points
+  geom_point() +
+  # labels
+  geom_text(nudge_y = 0.1) +
+  #  WGCNA recommended as an R^2 cutoff
+  geom_hline(yintercept = 0.90, col = "red") +
+  # labels
+  xlab("Soft Threshold (power)") +
+  ylab("Scale Free Topology Model Fit, signed R^2") +
+  ggtitle("Scale independence") +
+  # format 
+  theme_classic()
+
+```
+#### Build Network
+
+```{r,240 Build Network}
+# run WGCNA
+WGCNA.bw.net.240 <- WGCNA::blockwiseModules(WGCNA.Data.Matrix.240,
+                                        maxBlockSize = 100000,
+                                        TOMType = "signed",
+                                        power = 14,
+                                        numericLabels = TRUE,
+                                        randomSeed = 42)
+
+# write to results
+readr::write_rds(WGCNA.bw.net.240,
+                 file = paste(getwd(), "/Results/WGCNA/WGCNA_results_240.RDS", sep = ""))
+```
+
+
+#### Differential Module Expression
+
+```{r,240 metadata}
+# make dream meta data
+Dream.Meta.240 <- Sample.Info %>%
+  dplyr::filter(Timepoint == 240) %>%
+  # male characters
+  dplyr::mutate_all(as.character)
+```
+
+```{r,240 contrast}
+# make contrasts
+Dream.Constrast.240 <- variancePartition::makeContrastsDream(Dream.Form, Dream.Meta.240,
+                                                                 contrasts = c(
+                                                                   # difference between males by treatment at 240
+  "GroupM.Predator.240 - GroupM.Control.240",
+  # difference between females by treatment at 240
+  "GroupF.Predator.240 - GroupF.Control.240",
+  # difference between male and female in control at 240
+  "GroupM.Control.240 - GroupF.Control.240",
+  # difference between male and female in predator at 144
+  "GroupM.Predator.240 - GroupF.Predator.240",
+  # main sex effect at time 240
+  "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/2",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240 + GroupF.Predator.240 - GroupF.Control.240)/2",
+  # interaction effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240)"))
+
+
+```
+
+```{r,240 WGCNA eigen}
+# data frame of eigengene module data
+Modules.Eig.240 <- t(WGCNA.bw.net.240$MEs)-min(WGCNA.bw.net.240$MEs)
+
+# Module zero is where all genes that are not in a module go so we should remove it
+Modules.Eig.240 <- Modules.Eig.240[!(row.names(Modules.Eig.240)) == "ME0",]
+```
+
+```{r,240 module genes}
+# genes within the modules
+Module.Genes.240 <- tibble::enframe(WGCNA.bw.net.240$colors,
+                                       name = "Gene_Id", value = "Module")
+
+```
+
+
+```{r,240 modules eigen}
+Modules.Eig.240 <- edgeR::DGEList(counts = Modules.Eig.240,
+                                  group = as.factor(colnames((Gene.Filtered %>%
+                                                                dplyr::select(contains("240"))))))
+```
+
+```{r,240 voom dream}
+# estimate weights using linear mixed model of dream
+WGCNA.vobjDream.240 <- variancePartition::voomWithDreamWeights(
+  Modules.Eig.240,
+  Dream.Form, Dream.Meta.240, BPPARAM = Params)
+```
+
+```{r,240 dream fit}
+# Dream fit
+WGCNA.Fit.240 <- variancePartition::dream(WGCNA.vobjDream.240, Dream.Form, Dream.Meta.240,
+                                               Dream.Constrast.240, BPPARAM = Params,
+                                               ddf = "Kenward-Roger")
+
+# ebayes
+WGCNA.Fit.240 <- variancePartition::eBayes(WGCNA.Fit.240)
+```
+
+```{r,240 WGCNA}
+WGCNA.DEM.Results.240 <- lapply(X = list(
+  # difference between males by treatment at 240
+  "GroupM.Predator.240 - GroupM.Control.240",
+  # difference between females by treatment at 240
+  "GroupF.Predator.240 - GroupF.Control.240",
+  # difference between male and female in control at 144
+  "GroupM.Control.240 - GroupF.Control.240",
+  # difference between male and female in predator at 144
+  "GroupM.Predator.240 - GroupF.Predator.240",
+  # main sex effect at time 240
+  "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/2",
+  # main predator effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240 + GroupF.Predator.240 - GroupF.Control.240)/2",
+  # interaction effect at time 240
+  "(GroupM.Predator.240 - GroupM.Control.240) - (GroupF.Predator.240 - GroupF.Control.240)"),
+  FUN = function(X){
+    variancePartition::topTable(WGCNA.Fit.240, 
+                                                         coef = X, 
+                                                         adjust.method = "BH",
+                                                         p.value = 0.05, 
+                                                         number = Inf) %>%
+      # get gene ID
+      tibble::rownames_to_column(., var = "Module") %>%
+      dplyr::mutate(Contrast = X)}) %>%
+  # bind the list of results together
+  dplyr::bind_rows(.)
+
+```
+
+#### Did not do this
+```{r, DME Table with Gene Info}
+# make table with all the extra information
+DME.240.Results.Info.Table <- Module.Genes.240 %>%
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description", "go_id", "definition_1006"),
+                                     values =  .$Gene_Id, mart= Gene_Names), by = c("Gene_Id" = "ensembl_gene_id"), multiple  = "all")
+```
+
+### DID NOT DO THIS
+## Timepoint Table
+
+```{r, DME Table with Gene Info}
+# make table with all the extra information
+DME.Timepoint.Results.Info.Table <- list(
+  M48 = WGCNA.bw.net.48,
+  M98 = WGCNA.bw.net.98,
+  M144 = WGCNA.bw.net.144,
+  M240 = WGCNA.bw.net.240) %>%
+  lapply(X = ., FUN = function(x){
+    x$colors %>%
+       tibble::enframe(., name = "gene", value = "module") %>%
+      dplyr::mutate(module = paste0("ME", module))}) %>%
+  dplyr::bind_rows(., .id = "Model") %>%
+  dplyr::mutate(Model = readr::parse_number(Model)) %>%
+  dplyr::left_join(., biomaRt::getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "external_gene_name", "zfin_id_symbol", "description", "go_id", "definition_1006"),
+                                     values =  .$gene, mart= Gene_Names), by = c("gene" = "ensembl_gene_id"), multiple  = "all")
+```
+
+## GO Enrichment
+
+```{r, Background Genes}
+BG.Genes <- (Gene.Filtered %>%
+               tibble::rownames_to_column("Gene_Id"))$Gene_Id
+```
+
+## DGE
+
+```{r, set up list}
+DGE.Sig.List <- DGE.Dream.Results %>%
+  dplyr::group_split(Contrast) %>%
+  purrr::set_names(DGE.Dream.Results$Contrast %>%
+                     unique(.) %>% 
+                     sort(.))
+```
+
+```{r, GO Terms for DEG}
+GO.DGE <- lapply(DGE.Sig.List, FUN = function(x){
+  gprofiler2::gost(x$Gene_Id, organism = "gaculeatus", ordered_query = FALSE,
+                   multi_query = FALSE ,significant = TRUE, exclude_iea = FALSE, 
+                   measure_underrepresentation = FALSE, evcodes = TRUE, 
+                   user_threshold = 0.05, correction_method = "fdr", 
+                   domain_scope = "custom", custom_bg = BG.Genes,
+                   numeric_ns = "", sources = NULL, as_short_link = FALSE)
+})
+```
+
+```{r, DGE GO Table}
+DGE.GO.Terms.All <- lapply(GO.DGE, FUN = function(x)
+  {if(length(x) > 0){
+    return(x$result)}}) %>%
+   dplyr::bind_rows(., .id = "Contrast") %>%
+  dplyr::select(-query, -significant, -precision, -recall, -effective_domain_size, -evidence_codes, -intersection)
+```
+## DME
+
+### Global
+
+```{r, Module Genes}
+Module.Genes <- tibble::enframe(WGCNA.bw.net$colors, name = "gene", value = "module") %>%
+  dplyr::mutate(module = paste0("ME", module))
+```
+
+```{r, module genes list}
+Module.Gene.List <- Module.Genes %>%
+  dplyr::group_split(module) %>%
+  purrr::set_names(Module.Genes$module %>%
+                     unique(.) %>% 
+                     sort(.))
+```
+
+```{r, GO Modules}
+GO.Modules <- lapply(Module.Gene.List, FUN = function(x){
+  gprofiler2::gost(x$gene, organism = "gaculeatus", ordered_query = FALSE,
+                   multi_query = FALSE ,significant = TRUE, exclude_iea = FALSE, 
+                   measure_underrepresentation = FALSE, evcodes = TRUE, 
+                   user_threshold = 0.05, correction_method = "fdr", 
+                   domain_scope = "custom", custom_bg = BG.Genes,
+                   numeric_ns = "", sources = NULL, as_short_link = FALSE)
+})
+
+```
+
+```{r, GO MOdules Table}
+GO.Modules.Table <- lapply(GO.Modules, function(x){if(length(x) > 0){
+  return(x$result)}
+}) %>%
+  do.call(rbind, .) %>%
+  tibble::rownames_to_column(., var = "Module") %>%
+  dplyr::mutate(Module = gsub("\\..*", "", Module)) %>%
+  dplyr::select(-query, -significant, -precision, -recall, -effective_domain_size, -evidence_codes, -intersection)
+
+```
+### Timepoint Specific
+
+```{r, timepoint specific module GO}
+
+Module.GO.Timepoints <- list(
+  M48 = WGCNA.bw.net.48,
+  M98 = WGCNA.bw.net.98,
+  M144 = WGCNA.bw.net.144,
+  M240 = WGCNA.bw.net.240) %>%
+  lapply(X = ., FUN = function(x){
+    x$colors %>%
+       tibble::enframe(., name = "gene", value = "module") %>%
+      dplyr::mutate(module = paste0("ME", module))}) %>%
+  lapply(X = ., FUN = function(x){
+    x %>%
+      dplyr::group_split(module) %>%
+      purrr::set_names(x$module %>%
+                         unique(.) %>%
+                         sort(.))}) %>%
+  lapply(X = ., FUN = function(x){
+    x %>%
+      lapply(X = ., FUN = function(x){
+        gprofiler2::gost(x$gene, organism = "gaculeatus", ordered_query = FALSE,
+                         multi_query = FALSE ,significant = TRUE, exclude_iea = FALSE, 
+                         measure_underrepresentation = FALSE, evcodes = TRUE, 
+                         user_threshold = 0.05, correction_method = "fdr", 
+                         domain_scope = "custom", custom_bg = BG.Genes,
+                         numeric_ns = "", sources = NULL, as_short_link = FALSE)})})
+
+```
+
+### got to fix this
+```{r, Timepoint Specific GO table}
+Module.GO.Timepoints.Table <- Module.GO.Timepoints %>%
+  lapply(., function(x){
+    lapply(x, function(y){
+      if(length(y) > 0){
+        return(y$result)}}) %>%
+      do.call(rbind, .) %>%
+      tibble::rownames_to_column(., var = "Module") %>%
+      dplyr::mutate(Module = gsub("\\..*", "", Module))}) %>%
+  do.call(rbind, .) %>%
+  tibble::rownames_to_column(., var = "Timepoint") %>%
+  dplyr::mutate(Timepoint = readr::parse_number(Timepoint)) %>%
+  dplyr::mutate(Timepoint = as.numeric(gsub("\\..*", "", as.character(Timepoint)))) %>%
+  dplyr::select(-query, -significant, -precision, -recall, -effective_domain_size, -evidence_codes, -intersection)
+
+```
+
+# Differential Transcript Usage
+
+## Overall Treatment Effect
+
+### Sexes Combined
+
+#### Import Data
+```{r,Treament Global DTU Import Data}
+# import data
+Iso.Treat.Global.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.Global.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment, Sex) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID)) 
+```
+
+#### Formating
+```{r,DTU Treatment Global SwitchList}
+
+# make swtichlist
+Treat.Global.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.Global.Quant$counts,
+  isoformRepExpression = Iso.Treat.Global.Quant$abundance,
+  designMatrix = Iso.Treat.Global.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.Global.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.Global.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment Global Analysis}
+# analyize switch list
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.Global.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.Global.SwitchListAnalyzed)
+```
+
+#### Extract Sequences
+```{r, Treatment Global Extract Sequences}
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.Global.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/Global/Sexes_Combined"))
+```
+
+#### Add External Predictions
+```{r, Treatment Global Add Predictions}
+# cpc2
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.Global.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/Global/Sexes_Combined/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.Global.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/Global/Sexes_Combined/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.Global.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/Global/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.Global.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/Global/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.Global.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/Global/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.Global.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/Global/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, Global Alternative Splicing}
+# alternative splicing
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.Global.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequencese
+```{r, Global Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.Global.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.Global.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.Global.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.Global.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.Global.SwitchListAnalyzed, gene = 'itgb1bp1')
+
+switchPlot(Treat.Global.SwitchListAnalyzed, gene = 'cep55l')
+```
+
+
+
+
+### Male
+
+#### Import Data
+```{r,Treament Male Global DTU Import Data}
+# import data
+Iso.Treat.Male.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "M",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.Male.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "M") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment Global SwitchList}
+
+# make swtichlist
+Treat.Global.Male.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.Male.Quant$counts,
+  isoformRepExpression = Iso.Treat.Male.Quant$abundance,
+  designMatrix = Iso.Treat.Male.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.Global.Male.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.Global.Male.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+Objects do not exist because there were so significant results
+```{r,DTU Treatment Global Analysis}
+# analyize switch list
+Treat.Global.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.Global.Male.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.Global.Male.SwitchListAnalyzed)
+```
+
+### Female
+
+#### Import Data
+```{r,Treament Female Global DTU Import Data}
+# import data
+Iso.Treat.Female.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "F",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.Female.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "F") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment Global Fremale SwitchList}
+
+# make swtichlist
+Treat.Global.Female.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.Female.Quant$counts,
+  isoformRepExpression = Iso.Treat.Female.Quant$abundance,
+  designMatrix = Iso.Treat.Female.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.Global.Female.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.Global.Female.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+No significant results so object does not exist
+```{r,DTU Treatment Global Female Analysis}
+# analyize switch list
+Treat.Global.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.Global.Female.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.Global.Female.SwitchListAnalyzed)
+```
+
+## Treament Effect at 48
+
+### Sexes Combined
+
+#### Import Data
+```{r,Treatment 48 DTU Import Data}
+# import data
+Iso.Treat.48.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "48",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.48.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Timepoint == "48") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment, Sex) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID)) 
+```
+
+#### Formating
+```{r,DTU Treatment 48 SwitchList}
+
+# make swtichlist
+Treat.48.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.48.Quant$counts,
+  isoformRepExpression = Iso.Treat.48.Quant$abundance,
+  designMatrix = Iso.Treat.48.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.48.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.48.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+No significant results so object does not exist
+```{r,DTU 48 Global Analysis}
+# analyize switch list
+Treat.48.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.48.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.48.SwitchListAnalyzed)
+
+```
+
+
+
+
+### Male
+
+#### Import Data
+```{r,Treament Male 48 DTU Import Data}
+# import data
+Iso.Treat.48.Male.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "48M",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.48.Male.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "M" & Timepoint == 48) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 48 SwitchList}
+
+# make swtichlist
+Treat.48.Male.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.48.Male.Quant$counts,
+  isoformRepExpression = Iso.Treat.48.Male.Quant$abundance,
+  designMatrix = Iso.Treat.48.Male.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.48.Male.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.48.Male.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 48 Analysis}
+# analyize switch list
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.48.Male.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.48.Male.SwitchListAnalyzed)
+```
+
+#### Extract Sequences
+```{r, Treatment 48 Extract Sequences}
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.48.Male.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/48/Male"))
+```
+
+#### Add External Predictions
+```{r, Treatment 48 Add Predictions}
+# cpc2
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.48.Male.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/48/Male/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.48.Male.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/48/Male/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.48.Male.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/48/Male/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.48.Male.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/48/Male/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.48.Male.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/48/Male/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.48.Male.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/48/Male/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 48 Alternative Splicing}
+# alternative splicing
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.48.Male.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+
+#### Consequences
+```{r, 48 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.98.Male.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.98.Male.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.98.Male.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.98.Male.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+### Female
+
+#### Import Data
+```{r,Treament Female 48 DTU Import Data}
+# import data
+Iso.Treat.48.Female.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "48F",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.48.Female.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "F" & Timepoint == 48) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 48 Female SwitchList}
+
+# make swtichlist
+Treat.48.Female.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.48.Female.Quant$counts,
+  isoformRepExpression = Iso.Treat.48.Female.Quant$abundance,
+  designMatrix = Iso.Treat.48.Female.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.48.Female.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.48.Female.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+No significant results so the object does not exist
+```{r,DTU Treatment 48 Female Analysis}
+# analyize switch list
+Treat.48.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.48.Female.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.48.Female.SwitchListAnalyzed)
+```
+
+## Treament Effect at 98
+
+### Sexes Combined 
+#### Import Data
+```{r,Treatment 98 DTU Import Data}
+# import data
+Iso.Treat.98.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "98",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.98.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Timepoint == "98") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment, Sex) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID)) 
+```
+
+#### Formating
+```{r,DTU Treatment 98 SwitchList}
+
+# make swtichlist
+Treat.98.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.98.Quant$counts,
+  isoformRepExpression = Iso.Treat.98.Quant$abundance,
+  designMatrix = Iso.Treat.98.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.98.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.98.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU 98 Global Analysis}
+# analyize switch list
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.98.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.98.SwitchListAnalyzed)
+
+```
+
+#### Extract Sequences
+```{r, Treatment 98 Extract Sequences}
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.98.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/"))
+```
+
+
+#### Add External Predictions
+```{r, Treatment 98 Add Predictions}
+# cpc2
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.98.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.98.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.98.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.98.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.98.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/TMRs.gff3"),
+    showProgress=FALSE)
+
+### Add NetsurfP-2 analysis
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.98.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/98/Sexes_Combined/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 98 Alternative Splicing}
+# alternative splicing
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.144.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+
+#### Consequences
+```{r, 98 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.98.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.98.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.98.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.98.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.98.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+
+
+### Male
+
+#### Import Data
+```{r,Treament Male 98 DTU Import Data}
+# import data
+Iso.Treat.98.Male.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "98M",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.98.Male.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "M" & Timepoint == 98) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 98 SwitchList}
+
+# make swtichlist
+Treat.98.Male.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.98.Male.Quant$counts,
+  isoformRepExpression = Iso.Treat.98.Male.Quant$abundance,
+  designMatrix = Iso.Treat.98.Male.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.98.Male.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.98.Male.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 98 Analysis}
+# analyize switch list
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.98.Male.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.98.Male.SwitchListAnalyzed)
+```
+
+#### Extract Sequences
+```{r, Treatment 98 Extract Sequences}
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.98.Male.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/98/Male"))
+```
+
+#### Add External Predictions
+```{r, Treatment 98 Add Predictions}
+# cpc2
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.98.Male.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/98/Male/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.48.Male.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/98/Male/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.48.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.48.Male.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/48/Male/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.98.Male.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/98/Male/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.98.Male.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/98/Male/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.98.Male.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/98/Male/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 98 Alternative Splicing}
+# alternative splicing
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.98.Male.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequences
+```{r, 98 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.98.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.98.Male.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.98.Male.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.98.Male.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.98.Male.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+### Female
+
+#### Import Data
+```{r,Treament Female 98 DTU Import Data}
+# import data
+Iso.Treat.98.Female.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "98F",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.98.Female.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "F" & Timepoint == 98) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 98 Female SwitchList}
+
+# make swtichlist
+Treat.98.Female.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.98.Female.Quant$counts,
+  isoformRepExpression = Iso.Treat.98.Female.Quant$abundance,
+  designMatrix = Iso.Treat.98.Female.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.98.Female.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.98.Female.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 98 Female Analysis}
+# analyize switch list
+Treat.98.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.48.Female.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.98.Female.SwitchListAnalyzed)
+```
+
+
+## Treament Effect at 144
+
+### Sexes Combined
+
+#### Import Data
+```{r,Treatment 144 DTU Import Data}
+# import data
+Iso.Treat.144.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "144",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.144.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Timepoint == "144") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment, Sex) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID)) 
+```
+
+#### Formating
+```{r,DTU Treatment 144 SwitchList}
+
+# make swtichlist
+Treat.144.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.144.Quant$counts,
+  isoformRepExpression = Iso.Treat.144.Quant$abundance,
+  designMatrix = Iso.Treat.144.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.144.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.144.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU 144 Analysis}
+# analyize switch list
+Treat.144.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.144.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.144.SwitchListAnalyzed)
+
+```
+
+
+### Male
+
+#### Import Data
+```{r,Treament Male 144 DTU Import Data}
+# import data
+Iso.Treat.144.Male.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "144M",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.144.Male.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "M" & Timepoint == 144) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 144 SwitchList}
+
+# make swtichlist
+Treat.144.Male.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.144.Male.Quant$counts,
+  isoformRepExpression = Iso.Treat.144.Male.Quant$abundance,
+  designMatrix = Iso.Treat.144.Male.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.144.Male.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.144.Male.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 144 Analysis}
+# analyize switch list
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.144.Male.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.144.Male.SwitchListAnalyzed)
+```
+
+#### Extract Sequences
+```{r, Treatment 144 Extract Sequences}
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.144.Male.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/144/Male"))
+```
+
+#### Add External Predictions
+```{r, Treatment 144 Add Predictions}
+# cpc2
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.144.Male.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/144/Male/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.144.Male.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/144/Male/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.144.Male.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/144/Male/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.144.Male.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/144/Male/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.144.Male.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/144/Male/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.144.Male.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/144/Male/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 144 Alternative Splicing}
+# alternative splicing
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.144.Male.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequences
+```{r, 144 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.144.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.144.Male.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.144.Male.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.144.Male.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.144.Male.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+### Female
+
+#### Import Data
+```{r,Treament Female 144 DTU Import Data}
+# import data
+Iso.Treat.144.Female.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "144F",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.144.Female.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "F" & Timepoint == 144) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 144 Female SwitchList}
+
+# make swtichlist
+Treat.144.Female.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.144.Female.Quant$counts,
+  isoformRepExpression = Iso.Treat.144.Female.Quant$abundance,
+  designMatrix = Iso.Treat.144.Female.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.144.Female.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.144.Female.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 144 Female Analysis}
+# analyize switch list
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.144.Female.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.144.Female.SwitchListAnalyzed)
+```
+
+
+#### Extract Sequences
+```{r, Treatment 144 Extract Sequences}
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.144.Female.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/144/Female/"))
+```
+
+#### Add External Predictions
+```{r, Treatment 144 Add Predictions}
+# cpc2
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.144.Female.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/144/Female/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.144.Female.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/144/Female/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.144.Female.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/144/Female/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.144.Female.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/144/Female/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.144.Female.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/144/Female/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.144.Female.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/144/Female/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 144 Alternative Splicing}
+# alternative splicing
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.144.Female.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequences
+```{r, 144 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.144.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.144.Female.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.144.Female.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.144.Female.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.144.Female.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+## Treament Effect at 240
+
+### Sexes Combined
+
+#### Import Data
+```{r,Treatment 240 DTU Import Data}
+# import data
+Iso.Treat.240.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "240",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.240.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Timepoint == "240") %>%
+  # select what we need
+  dplyr::select(Sample, Treatment, Sex) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID)) 
+```
+
+#### Formating
+```{r,DTU Treatment 240 SwitchList}
+
+# make swtichlist
+Treat.240.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.240.Quant$counts,
+  isoformRepExpression = Iso.Treat.240.Quant$abundance,
+  designMatrix = Iso.Treat.240.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.240.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.240.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU 240 Global Analysis}
+# analyize switch list
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.240.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.240.SwitchListAnalyzed)
+
+```
+
+#### Extract Sequences
+```{r, Treatment 240 Extract Sequences}
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.240.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/"))
+```
+
+#### Add External Predictions
+```{r, Treatment 144 Add Predictions}
+# cpc2
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.240.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.240.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.240.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.240.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.240.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/TMRs.gff3"),
+    showProgress=FALSE)
+
+### Add NetsurfP-2 analysis
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.240.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/240/Sexes_Combined/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 240 Alternative Splicing}
+# alternative splicing
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.240.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequences
+```{r, 240 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.240.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.240.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.240.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.240.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.240.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+
+
+### Male
+
+#### Import Data
+```{r,Treament Male 144 DTU Import Data}
+# import data
+Iso.Treat.240.Male.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "240M",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.240.Male.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "M" & Timepoint == 240) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 240 SwitchList}
+
+# make swtichlist
+Treat.240.Male.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.240.Male.Quant$counts,
+  isoformRepExpression = Iso.Treat.240.Male.Quant$abundance,
+  designMatrix = Iso.Treat.240.Male.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.240.Male.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.240.Male.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 240 Analysis}
+# analyize switch list
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.240.Male.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.240.Male.SwitchListAnalyzed)
+```
+
+#### Extract Sequences
+```{r, Treatment 240 Extract Sequences}
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.240.Male.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/240/Male"))
+```
+
+#### Add External Predictions
+```{r, Treatment 240 Add Predictions}
+# cpc2
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.240.Male.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/240/Male/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.240.Male.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/240/Male/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.240.Male.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/240/Male/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.240.Male.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/240/Male/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.240.Male.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/240/Male/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.240.Male.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/240/Male/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 98 Alternative Splicing}
+# alternative splicing
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.240.Male.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequences
+```{r, 98 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.240.Male.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.240.Male.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.240.Male.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.240.Male.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.144.Male.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+### Female
+
+#### Import Data
+```{r,Treament Female 240 DTU Import Data}
+# import data
+Iso.Treat.240.Female.Quant <- IsoformSwitchAnalyzeR::importIsoformExpression(
+  parentDir = paste0(getwd(), "/Expression/"),
+  pattern = "240F",
+  readLength = 100,
+  addIsofomIdAsColumn = TRUE)
+
+# Make design matrix
+Iso.Treat.240.Female.Design <- Sample.Info %>%
+  # make sample column
+  tibble::rownames_to_column(., var = "Sample") %>%
+  # filter
+  dplyr::filter(Sex == "F" & Timepoint == 240) %>%
+  # select what we need
+  dplyr::select(Sample, Treatment) %>%
+  # rename
+  dplyr::rename("sampleID" = Sample,
+                "condition" = Treatment) %>%
+  # fix sampleId
+  dplyr::mutate(sampleID = gsub('\\.', '-', sampleID))
+  
+```
+
+#### Formating
+```{r,DTU Treatment 98 Female SwitchList}
+
+# make swtichlist
+Treat.240.Female.SwitchList <- IsoformSwitchAnalyzeR::importRdata(
+  isoformCountMatrix = Iso.Treat.240.Female.Quant$counts,
+  isoformRepExpression = Iso.Treat.240.Female.Quant$abundance,
+  designMatrix = Iso.Treat.240.Female.Design,
+  isoformExonAnnoation = paste0(getwd(), "/Genome/no_genes_genomic.gtf"),
+  isoformNtFasta = paste0(getwd(), "/Genome/rna.fa"),
+  fixStringTieAnnotationProblem = TRUE,
+    showProgress = FALSE)
+
+# Filter Switch List
+Treat.240.Female.SwitchListFiltered <- IsoformSwitchAnalyzeR::preFilter(Treat.240.Female.SwitchList,
+                                                                    geneExpressionCutoff = 5,
+                                                                    isoformExpressionCutoff = 1,
+                                                                    removeSingleIsoformGenes = TRUE)
+```
+
+#### Analysis
+```{r,DTU Treatment 144 Female Analysis}
+# analyize switch list
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::isoformSwitchTestDEXSeq(
+  switchAnalyzeRlist = Treat.240.Female.SwitchListFiltered,
+  reduceToSwitchingGenes=TRUE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.240.Female.SwitchListAnalyzed)
+```
+
+
+#### Extract Sequences
+```{r, Treatment 144 Extract Sequences}
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::extractSequence(
+  Treat.240.Female.SwitchListAnalyzed,
+  pathToOutput = paste0(getwd(), "/Results/Extracted/240/Female/"))
+```
+
+#### Add External Predictions
+```{r, Treatment 144 Add Predictions}
+# cpc2
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeCPC2(
+  switchAnalyzeRlist   = Treat.240.Female.SwitchListAnalyzed,
+    pathToCPC2resultFile  = paste0(getwd(), "/Results/Extracted/240/Female/result_cpc2.txt"),
+    codingCutoff         = 0.725, # the coding potential cutoff we suggested for human
+    removeNoncodinORFs   = FALSE)
+
+# PFAM not working right now
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzePFAM(
+  switchAnalyzeRlist = Treat.240.Female.SwitchListAnalyzed,
+    pathToPFAMresultFile = paste0(getwd(), "/Results/Extracted/240/Female/result_pfam.txt"))
+
+# Add SignalP analysis
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSignalP(
+    switchAnalyzeRlist       = Treat.240.Female.SwitchListAnalyzed,
+    pathToSignalPresultFile  = paste0(getwd(), "/Results/Extracted/240/Female/prediction_results.txt"))
+
+# Add DeepLoc2 analysis
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepLoc2(
+    switchAnalyzeRlist = Treat.240.Female.SwitchListAnalyzed,
+    pathToDeepLoc2resultFile = paste0(getwd(), "/Results/Extracted/240/Female/DeepLoc2.csv"),
+    quiet = FALSE)
+
+# Add DeepTMHMM analysis
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeDeepTMHMM(
+    switchAnalyzeRlist   = Treat.240.Female.SwitchListAnalyzed,
+    pathToDeepTMHMMresultFile =  paste0(getwd(), "/Results/Extracted/240/Female/TMRs.gff3"),
+    showProgress=FALSE)
+
+
+### Add NetsurfP-2 analysis
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeNetSurfP2(
+    switchAnalyzeRlist        = Treat.240.Female.SwitchListAnalyzed,
+    pathToNetSurfP2resultFile = paste0(getwd(), "/Results/Extracted/240/Female/NetSurfP2.csv"),
+    showProgress = FALSE)
+```
+
+```{r, 144 Alternative Splicing}
+# alternative splicing
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeAlternativeSplicing(
+    switchAnalyzeRlist = Treat.240.Female.SwitchListAnalyzed,
+    quiet=TRUE)
+
+```
+
+#### Consequences
+```{r, 144 Consequences}
+# consequences
+consequencesOfInterest <- c('tss',
+                            'tts',
+                            'last_exon',
+                            'isoform_seq_similarity',
+                            'isoform_length',
+                            'exon_number',
+                            'intron_structure',
+                            'intron_retention',
+                            'isoform_class_code',
+                            'coding_potential',
+                            'ORF_seq_similarity',
+                            'ORF_genomic',
+                            'ORF_length',
+                            '5_utr_seq_similarity',
+                            '5_utr_length',
+                            '3_utr_seq_similarity',
+                            '3_utr_length',
+                            'NMD_status',
+                            'domains_identified',
+                            'domain_isotype',
+                            'domain_length',
+                            'genomic_domain_position',
+                            'IDR_identified',
+                            'IDR_length',
+                            'IDR_type',
+                            'sub_cell_location',
+                            'sub_cell_shift_to_cell_membrane',
+                            'sub_cell_shift_to_cytoplasm',
+                            'sub_cell_shift_to_nucleus',
+                            'sub_cell_shift_to_Extracellular',
+                            'isoform_topology',
+                            'extracellular_region_count',
+                            'intracellular_region_count',
+                            'extracellular_region_length',
+                            'intracellular_region_length')
+
+
+Treat.240.Female.SwitchListAnalyzed <- IsoformSwitchAnalyzeR::analyzeSwitchConsequences(
+    Treat.240.Female.SwitchListAnalyzed,
+    consequencesToAnalyze = consequencesOfInterest, 
+    dIFcutoff = 0.1, 
+    showProgress=FALSE)
+
+IsoformSwitchAnalyzeR::extractSwitchSummary(Treat.240.Female.SwitchListAnalyzed, dIFcutoff = 0.1, filterForConsequences = TRUE)
+
+IsoformSwitchAnalyzeR::extractTopSwitches(
+    Treat.240.Female.SwitchListAnalyzed, 
+    filterForConsequences = TRUE, 
+    n = NA, 
+    sortByQvals = TRUE)
+
+switchPlot(Treat.240.Female.SwitchListAnalyzed, gene = 'eml5')
+
+```
+
+# Make Results RData File
+
+```{r, saving results}
+# list of data object we need
+# DGE.Voom.Results
+# DGE.Voom.Results.Info.Table
+# DGE GO terms
+#Global WGCNA
+  # table of significicant modules
+  # Table of all the genes in each module
+  # GO.Modules.Table
+# Time specific
+  # table of significicant modules
+  # Table of all the genes in each module
+  # Module.GO.Timepoints.Table
+
+```
+
+# Plots
+
+## Venn diagrams
+
+### DGE
+
+#### DGE-Genes
+
+##### Comparision between timepoints
+
+```{r, Venn Diagram for iso}
+
+VD.hellman <-ggVennDiagram::ggVennDiagram(x = list("Overall" = 
+                                                     (Treat.Global.SwitchListAnalyzed$isoformFeatures %>%
+                                                        dplyr::select(gene_id) %>%
+                                                        distinct(.)),
+                                                   "Timepoint 48" = 
+                                                     (Treat.48.SwitchListAnalyzed$isoformFeatures %>%
+                                                        dplyr::select(gene_id) %>%
+                                                        distinct(.)),
+                                                   "Timepoint 144" = 
+                                                   (Treat.144.SwitchListAnalyzed$isoformFeatures %>%
+                                                        dplyr::select(gene_id) %>%
+                                                        distinct(.)))) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Control vs. Predator Paternal Treatment") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+
+```{r, Venn Diagram for 98 vs 48}
+
+VD.98.48 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupM.Control.48"))$Gene_Id,
+                                                 "Control Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.98 - GroupF.Control.48"))$Gene_Id,
+                                                 "Predator Male" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Predator.48"))$Gene_Id,
+                                                 "Predator Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Predator.48"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98 vs 48") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 144 vs 98}
+
+VD.144.98 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupM.Control.98"))$Gene_Id,
+                                                 "Control Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.144 - GroupF.Control.98"))$Gene_Id,
+                                                 "Predator Male" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Predator.98"))$Gene_Id,
+                                                 "Predator Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Predator.98"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144 vs 98")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 240 vs 144}
+
+VD.240.144 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupM.Control.144"))$Gene_Id,
+                                                 "Control Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.240 - GroupF.Control.144"))$Gene_Id,
+                                                 "Predator Male" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Predator.144"))$Gene_Id,
+                                                 "Predator Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Predator.144"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240 vs 144")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+##### Per Timepoint
+
+```{r, Venn Diagram for 48}
+
+VD.48 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupM.Control.48"))$Gene_Id,
+                                                 "Female: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.48 - GroupF.Control.48"))$Gene_Id,
+                                                 "Predator: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupF.Predator.48"))$Gene_Id,
+                                                 "Control: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.48 - GroupF.Control.48"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 48")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 98}
+
+VD.98 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Control.98"))$Gene_Id,
+                                                 "Female: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Control.98"))$Gene_Id,
+                                                 "Predator: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupF.Predator.98"))$Gene_Id,
+                                                 "Control: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupF.Control.98"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 144}
+
+VD.144 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Control.144"))$Gene_Id,
+                                                 "Female: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Control.144"))$Gene_Id,
+                                                 "Predator: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupF.Predator.144"))$Gene_Id,
+                                                 "Control: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupF.Control.144"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 240}
+
+VD.240 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Control.240"))$Gene_Id,
+                                                 "Female: Predator vs Control" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Control.240"))$Gene_Id,
+                                                 "Predator: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupF.Predator.240"))$Gene_Id,
+                                                 "Control: Male vs Female" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupF.Control.240"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+
+##### Sex Differences Overall
+
+```{r, Venn Diagram for 48}
+
+VD.Sex <-ggVennDiagram::ggVennDiagram(x = list("Timepoint 48" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/4"))$Gene_Id,
+                                                 "Timepoint 98" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.88)/4"))$Gene_Id,
+                                                 "Timepoint 144" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/4"))$Gene_Id,
+                                                 "Timepoint 240" = (DGE.Voom.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/4"))$Gene_Id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Male vs Female")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+#### DGE - GO
+
+##### Timepoints
+
+```{r, Venn Diagram GO 98 vs 48}
+
+VD.DGE.GO.98.48 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupM.Control.48"))$term_id,
+                                                 "Control Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.98 - GroupF.Control.48"))$term_id,
+                                                 "Predator Male" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Predator.48"))$term_id,
+                                                 "Predator Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Predator.48"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98 vs 48") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram GO 98 vs 48}
+
+VD.DGE.GO.144.98 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupM.Control.98"))$term_id,
+                                                 "Control Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.144 - GroupF.Control.98"))$term_id,
+                                                 "Predator Male" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Predator.98"))$term_id,
+                                                 "Predator Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Predator.98"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144 vs 98") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram GO 98 vs 48}
+
+VD.DGE.GO.240.144 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupM.Control.144"))$term_id,
+                                                 "Control Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.240 - GroupF.Control.144"))$term_id,
+                                                 "Predator Male" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Predator.144"))$term_id,
+                                                 "Predator Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Predator.144"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240 vs 144") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+##### Per Timepoint
+
+```{r, Venn Diagram for 48}
+
+VD.DGE.GO.48 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupM.Control.48"))$term_id,
+                                                 "Female: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.48 - GroupF.Control.48"))$term_id,
+                                                 "Predator: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupF.Predator.48"))$term_id,
+                                                 "Control: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.48 - GroupF.Control.48"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 48")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 98}
+
+VD.DGE.GO.98 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Control.98"))$term_id,
+                                                 "Female: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Control.98"))$term_id,
+                                                 "Predator: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupF.Predator.98"))$term_id,
+                                                 "Control: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupF.Control.98"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 144}
+
+VD.DGE.GO.144 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Control.144"))$term_id,
+                                                 "Female: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Control.144"))$term_id,
+                                                 "Predator: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupF.Predator.144"))$term_id,
+                                                 "Control: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupF.Control.144"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 240}
+
+VD.DGE.GO.240 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Control.240"))$term_id,
+                                                 "Female: Predator vs Control" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Control.240"))$term_id,
+                                                 "Predator: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupF.Predator.240"))$term_id,
+                                                 "Control: Male vs Female" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupF.Control.240"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+##### Sex Differences Overall
+
+```{r, Venn Diagram for 48}
+
+VD.DGE.GO.Sex <-ggVennDiagram::ggVennDiagram(x = list("Timepoint 48" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/4"))$term_id,
+                                                 "Timepoint 98" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.88)/4"))$term_id,
+                                                 "Timepoint 144" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/4"))$term_id,
+                                                 "Timepoint 240" = (DGE.GO.Terms.All %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/4"))$term_id)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Male vs Female")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+### DME
+
+#### Global
+```{r, Venn Diagram for 98 vs 48}
+
+VD.DME.98.48 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupM.Control.48"))$Module,
+                                                 "Control Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.98 - GroupF.Control.48"))$Module,
+                                                 "Predator Male" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Predator.48"))$Module,
+                                                 "Predator Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Predator.48"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98 vs 48") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 144 vs 98}
+
+VD.DME.144.98 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupM.Control.98"))$Module,
+                                                 "Control Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.144 - GroupF.Control.98"))$Module,
+                                                 "Predator Male" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Predator.98"))$Module,
+                                                 "Predator Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Predator.98"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144 vs 98") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 240 vs 144}
+
+VD.DME.240.144 <-ggVennDiagram::ggVennDiagram(x = list("Control Male" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupM.Control.144"))$Module,
+                                                 "Control Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Control.240 - GroupF.Control.144"))$Module,
+                                                 "Predator Male" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Predator.144"))$Module,
+                                                 "Predator Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Predator.144"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240 vs 144") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+##### Per Timepoint
+
+```{r, Venn Diagram for 48}
+
+VD.DME.48 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupM.Control.48"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.48 - GroupF.Control.48"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupF.Predator.48"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.48 - GroupF.Control.48"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 48")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 98}
+
+VD.DME.98 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Control.98"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Control.98"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupF.Predator.98"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupF.Control.98"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 144}
+
+VD.DME.144 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Control.144"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Control.144"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupF.Predator.144"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupF.Control.144"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 240}
+
+VD.DME.240 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Control.240"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Control.240"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupF.Predator.240"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupF.Control.240"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+##### Sex Differences Overall
+
+```{r, Venn Diagram for 48}
+
+VD.DME.Sex <-ggVennDiagram::ggVennDiagram(x = list("Timepoint 48" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.48 + GroupM.Control.48 - GroupF.Predator.48 - GroupF.Control.48)/4"))$Module,
+                                                 "Timepoint 98" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.98 + GroupM.Control.98 - GroupF.Predator.98 - GroupF.Control.88)/4"))$Module,
+                                                 "Timepoint 144" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.144 + GroupM.Control.144 - GroupF.Predator.144 - GroupF.Control.144)/4"))$Module,
+                                                 "Timepoint 240" = (WGCNA.DEM.Results %>%
+                                                                     dplyr::filter(Contrast == "(GroupM.Predator.240 + GroupM.Control.240 - GroupF.Predator.240 - GroupF.Control.240)/4"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Male vs Female") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+
+
+#### Timepoint 48
+
+##### Per Timepoint
+
+```{r, Venn Diagram for 48}
+
+VD.DME.48.48 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results.48 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupM.Control.48"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results.48 %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.48 - GroupF.Control.48"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results.48 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.48 - GroupF.Predator.48"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results.48 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.48 - GroupF.Control.48"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 48")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 98}
+
+VD.DME.98.98 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results.98 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupM.Control.98"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results.98 %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.98 - GroupF.Control.98"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results.98 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.98 - GroupF.Predator.98"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results.98 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.98 - GroupF.Control.98"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 98")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 144}
+
+VD.DME.144.144 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results.144 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupM.Control.144"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results.144 %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.144 - GroupF.Control.144"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results.144 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.144 - GroupF.Predator.144"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results.144 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.144 - GroupF.Control.144"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 144") + 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+```{r, Venn Diagram for 240}
+
+VD.DME.240 <-ggVennDiagram::ggVennDiagram(x = list("Male: Predator vs Control" = (WGCNA.DEM.Results.240 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupM.Control.240"))$Module,
+                                                 "Female: Predator vs Control" = (WGCNA.DEM.Results.240 %>%
+                                                                     dplyr::filter(Contrast == "GroupF.Predator.240 - GroupF.Control.240"))$Module,
+                                                 "Predator: Male vs Female" = (WGCNA.DEM.Results.240 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Predator.240 - GroupF.Predator.240"))$Module,
+                                                 "Control: Male vs Female" = (WGCNA.DEM.Results.240 %>%
+                                                                     dplyr::filter(Contrast == "GroupM.Control.240 - GroupF.Control.240"))$Module)) + 
+  scale_color_brewer(palette = "Paired") + 
+  labs(title = "Timepoint 240")+ 
+  scale_x_continuous(expand = expansion(mult = .2))
+```
+
+# Example code for data exploration
+
+Because our data analysis has gotten so complex, there is not really a way that I can provide all the possible combinations of information that you may be interested in. Therefore, I have some sample code that can be edited to narrow down genes of GO terms of interest based on the contrast.
+
+```{r, example code for data exploration}
+# For genes
+
+## If you want to look at genes that are significantly differentially expressed in a Males between treatments then you simply filter the DGE.Voom.Results.Info.Table by the contrasts
+
+### If you use DGE.Voom.Results.Info.Table then you will get the same gene multiple times because there is a new row for every gene description or associated GO term. If you can bout the numbers then you should use DGE.Voom.Results.
+
+### To get available contrasts 
+unique(DGE.Voom.Results.Info.Table$Contrast)
+
+### Sample single contrast filtering code
+Example.Table <- DGE.Voom.Results.Info.Table %>%
+  # this gets rid of the description, go_id, and definition_1006
+  # if you do not get rid of this then you will have multiple rows per gene do to many-to-one joins between the Gene_Id and the database.
+  dplyr::select(1:10) %>%
+  # this removes duplicated from the info table
+  dplyr::distinct(.) %>%
+  # filter
+  dplyr::filter(Contrast == "GroupM.Control.98 - GroupM.Control.48")
+
+## If you want to look at genes are are differentially expressed between contrasts that are unique to another contrast (e.g., genes that are differentially expressed between treatment in males but not female), you must filter for both contrast, group by the gene, calculate group size and filter for 1. If you want shared genes then you filter by greater than 1.
+
+### Sample unique between contrasts code
+Example.Table <- DGE.Voom.Results.Info.Table %>%
+  # this gets rid of the description, go_id, and definition_1006
+  # if you do not get rid of this then you will have multiple rows per gene do to many-to-one joins between the Gene_Id and the database.
+  dplyr::select(1:10) %>%
+  # this removes duplicated from the info table
+  dplyr::distinct(.) %>%
+  # filter
+  dplyr::filter(Contrast == "GroupM.Control.98 - GroupM.Control.48" |
+                  Contrast == "GroupF.Control.98 - GroupF.Control.48") %>%
+  # group by gene_id
+  dplyr::group_by(Gene_Id) %>%
+  # calculate the count per group
+  dplyr::mutate(Count = n()) %>%
+  # ungroup
+  dplyr::ungroup(.) %>%
+  # filter for unique genes
+  dplyr::filter(Count == 1)
+
+### Sample shared between contrasts code
+Example.Table <- DGE.Voom.Results.Info.Table %>%
+  # this gets rid of the description, go_id, and definition_1006
+  # if you do not get rid of this then you will have multiple rows per gene do to many-to-one joins between the Gene_Id and the database.
+  dplyr::select(1:10) %>%
+  # this removes duplicated from the info table
+  dplyr::distinct(.) %>%
+  # filter
+  dplyr::filter(Contrast == "GroupM.Control.98 - GroupM.Control.48" |
+                  Contrast == "GroupF.Control.98 - GroupF.Control.48") %>%
+  # group by gene_id
+  dplyr::group_by(Gene_Id) %>%
+  # calculate the count per group
+  dplyr::mutate(Count = n()) %>%
+  # ungroup
+  dplyr::ungroup(.) %>%
+  # filter for genes shared
+  # you can increase this as you increase the number of contrasts
+  # for example if you have three contrasts then the number should be three to get shared genes between all 3
+  dplyr::filter(Count == 2) %>%
+  # the next steps are only necessary if you want to count the number of genes.
+  # next we just grab the gene_id, gene name, and zfin id
+  dplyr::select(Gene_Id, external_gene_name, zfin_id_symbol ) %>%
+  # now we get distinct
+  dplyr::distinct(.)
+  
+# For GO terms
+
+## The code to explore the enriched GO terms between contrasts is extremely similar. You just must change the columns. The data structure of these results is slightly different. The GO enrichment results are in a list and nested format for the differential gene expression data and WGCNA modules, respectively.
+
+# if you wanted to look at a single contrast for enrichment using the differentially expressed genes not WGCNA modules
+# here you just type $ and the contrast you are interested in and $ result
+Example.Table <- GO.DGE$`GroupF.Control.144 - GroupF.Control.98`$result
+
+# Importantly, we look for enrichment within the modules not between contrasts so you would want to do this for modules that you see are differentially expressed in either WGCNA.DEM.Results, WGCNA.DEM.Results.48, WGCNA.DEM.Results.98, WGCNA.DEM.Results.144, WGCNA.DEM.Results.240.
+
+# if you wanted to look at a single module for enrichment using the WGCNA modules
+# GO.Modules is the global WGCNA
+# here you just type $ and the module you are interested in and $result
+Example.Table <- GO.Modules$ME0$result
+
+# if you wanted to look at a single module for enrichment using the WGCNA modules
+# Module.GO.Timepoints is the list with modules split by timepoints
+# For the timepoint specific modules, you just type $ and the timepoint you are interested in *M48 = 48), $ and the module you are interested in and $result
+Example.Table <- Module.GO.Timepoints$M48$ME0$result
+
+```
